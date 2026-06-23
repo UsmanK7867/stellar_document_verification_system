@@ -1,0 +1,59 @@
+{
+  "network": "testnet",
+  "rpcUrl": "https://soroban-testnet.stellar.org",
+  "contractId": "CBDG2ADLXD2KFJJBHDLFYO6KP6Y7VNNQJJK7LG6P7RYUCAVZH67UFHKZ",
+  "wasmHash": "65e305929dbf0eac566761e9b9f901d17e5d161c4862a87c2a285a5b08682718",
+  "transactions": {
+    "install-wasm": "f0a6411caea37e18f0b96688ad676db790c4acb30e8cf4f0c461dcb8485e28e6",
+    "deploy-contract": "ec94be4c1a2238868af7d0e3f5ea13c47d45dc272c26f168fddcd2bba6814d04",
+    "init": "717a7f137a72aa41300e389deee18213a17c5b5e04695e00de428223bae7dd28",
+    "add-sub-A": "0eadec8d8221d27aaaf4121f48bd1c33b9735858fa81cf6dab2d6511d8989b54",
+    "add-sub-B": "c0b8399fd1f377da4db091a49de2ac607514215e3192a3e06f2abc5765d7163f",
+    "whitelist-w04": "3a788b791b54197ad3c22d9dc63e0615a2c97ae0f24b9e776387c9683b0b6f21",
+    "whitelist-w05": "6b9a241007d19c4cdd13fed9a5e9c54a87c0d74d249d403b047775f09b67f65b",
+    "set-threshold": "035233e3ccc3f068b015f54d18bec1c7eb9520a6c4f01fa0be9d4759210b168f",
+    "store-doc": "8deeed370abd9d3c0570fc538d3ae0816c50065b7022e270999ad45f2dac6f0d",
+    "read-doc": "bd7b4d5eaa17199459fcaeb1ac4c7ddb3000cfc99c2a61ca7f6997c4d8a1f250",
+    "review-A": "d6eaf769b7f7fdd33babbe51d8597578d57ab101bf17b7f4acd33f6c02455284",
+    "review-B": "84b71160544daff426cd207787ec1000b64df181d4f0524d0fb515b01ed47a79",
+    "create-prop1": "a290d34b38e6f7367ba09c4f85140871c31d1dbcadec5df5fa34e6942c4320aa",
+    "approve1-A": "4dd5eabf4a76db700b3064bb9cabe660f1c4991856da6fa276cc95999a9530c7",
+    "approve1-B": "073811656985dc976231bf8d72cd6f9a74cec9df7bfb741291bfd5f670472e68",
+    "create-prop2": "86fd27c7a9ad117933ce22a73791f754042450b06b16cc69769a956ff03531a8",
+    "approve2-A": "be4cf3d2115137a89e23f6501346d7cf1c1aff72a2cdcb6df439104ff5937e3b",
+    "approve2-B": "412ef10ea04810503a9d81174a7a63ba387eaf84fc83d1c813f447b5eafff8bd"
+  },
+  "mainAdmin": {
+    "id": "wallet-01",
+    "publicKey": "GAKNE5M3T2OGH6VXEEEM2SWC7S7ZHSECVE2A5VPK7P55PAIVKEH7Z4NA",
+    "secretKey": "SB3CJO4GA56RPA6WEJC5QL6LHHF5D2MQERYXAP5YFCZLXHEOLCCT6LK3"
+  },
+  "subAdmins": [
+    {
+      "id": "wallet-02",
+      "publicKey": "GAB6B3J2PE3NDVS4GZPJWHTSMYIFSTVIYRKOEYROPGM46A4YJCKCYKQW",
+      "secretKey": "SAMBI3LJ47UNIYVXFTLWIF6KM27OKKXXQBPMSNH3JTTCJNYSTMD2D277"
+    },
+    {
+      "id": "wallet-03",
+      "publicKey": "GC6V6VZ6NGQO7A3TNMTOXLDBX3CZWCFRW2W57GSRM2KC7HUT7IISZJ3Z",
+      "secretKey": "SBCHYHXDSVUFTM4UXN5OWTK2LLTBVUMTKLO7EV7BTEB6XAULALUEZ3QV"
+    }
+  ],
+  "whitelistedUsers": [
+    {
+      "id": "wallet-04",
+      "publicKey": "GBOMJW3SR76M4GZJA6E3HQOQZ2LZ6HCW5FIW6HWGT7OPXSWRBFZIZOOP",
+      "secretKey": "SAUOAULYEOAHJODTRJF4BCOZMFR3ITYZDQ2DOAAY7YZO7O3SOVAGCY4V"
+    },
+    {
+      "id": "wallet-05",
+      "publicKey": "GDP2SIFL3HQNSF74V6VHF3RVGKWYG5VJ5NJJH2Y5YBCXFTOOBZYLUKNA",
+      "secretKey": "SD3XDNOVL6ZNR3766GWQVJWNYBHHRC5YPXV4OANYTP6ZLKOTNTC3W5G4"
+    }
+  ],
+  "document": {
+    "name": "Q4-Audit-Report.pdf",
+    "hash": "e2e9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f"
+  }
+}
