@@ -1,5 +1,5 @@
 #![cfg_attr(not(test), no_std)]
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Env, String, Vec};
 
 #[contract]
 pub struct Contract;
@@ -38,6 +38,8 @@ pub struct Document {
     pub hash: String,
     pub timestamp: u64,
     pub added_by: Address,
+    pub status: CertificateStatus,
+    pub expiry: u64,
 }
 
 #[derive(Clone)]
@@ -48,6 +50,8 @@ pub struct VerifiedDocument {
     pub timestamp: u64,
     pub added_by: Address,
     pub verified_document: bool,
+    pub certificate_status: CertificateStatus,
+    pub expiry: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -60,6 +64,15 @@ pub enum DocumentStatus {
     ApprovedWithRecommendations,
     RequiresChanges,
     Rejected,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[contracttype]
+pub enum CertificateStatus {
+    Submitted,
+    Issued,
+    Revoked,
+    Expired,
 }
 
 #[derive(Clone)]
@@ -80,6 +93,7 @@ pub struct Review {
 pub enum ProposalAction {
     RevokeCertificate(String),
     UpdateThreshold(u32),
+    ContractUpgrade(BytesN<32>),
 }
 
 #[derive(Clone)]
@@ -145,17 +159,33 @@ impl Contract {
         }
     }
 
+    fn effective_certificate_status(env: &Env, doc: &Document) -> CertificateStatus {
+        if doc.status == CertificateStatus::Issued && env.ledger().timestamp() > doc.expiry {
+            CertificateStatus::Expired
+        } else {
+            doc.status
+        }
+    }
+
     fn execute_action(env: &Env, action: &ProposalAction) {
         match action {
             ProposalAction::RevokeCertificate(doc_hash) => {
-                env.storage()
+                let key = DataKey::Document(doc_hash.clone());
+                let mut doc: Document = env
+                    .storage()
                     .persistent()
-                    .remove(&DataKey::Document(doc_hash.clone()));
+                    .get(&key)
+                    .expect("document not found");
+                doc.status = CertificateStatus::Revoked;
+                env.storage().persistent().set(&key, &doc);
             }
             ProposalAction::UpdateThreshold(new_threshold) => {
                 env.storage()
                     .persistent()
                     .set(&DataKey::GovernanceThreshold, new_threshold);
+            }
+            ProposalAction::ContractUpgrade(wasm_hash) => {
+                env.deployer().update_current_contract_wasm(wasm_hash.clone());
             }
         }
     }
@@ -266,10 +296,39 @@ impl Contract {
             hash: hash.clone(),
             timestamp,
             added_by: actor,
+            status: CertificateStatus::Submitted,
+            expiry: 0u64,
         };
         env.storage()
             .persistent()
             .set(&DataKey::Document(hash), &doc);
+    }
+
+    pub fn issue_certificate(env: Env, admin: Address, doc_hash: String, expiry: u64) {
+        admin.require_auth();
+        let stored: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MainAdmin)
+            .expect("contract not initialized");
+        if admin != stored {
+            panic!("only main admin can issue certificates");
+        }
+
+        let key = DataKey::Document(doc_hash.clone());
+        let mut doc: Document = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("document not found");
+
+        if doc.status != CertificateStatus::Submitted {
+            panic!("certificate can only be issued from Submitted status");
+        }
+
+        doc.status = CertificateStatus::Issued;
+        doc.expiry = expiry;
+        env.storage().persistent().set(&key, &doc);
     }
 
     pub fn read_document(env: Env, hash: String) -> Option<Document> {
@@ -278,12 +337,19 @@ impl Contract {
 
     pub fn verify_document(env: Env, hash: String) -> Option<VerifiedDocument> {
         let doc: Option<Document> = env.storage().persistent().get(&DataKey::Document(hash));
-        doc.map(|d| VerifiedDocument {
-            name: d.name,
-            hash: d.hash,
-            timestamp: d.timestamp,
-            added_by: d.added_by,
-            verified_document: true,
+        doc.map(|d| {
+            let effective_status = Self::effective_certificate_status(&env, &d);
+            let is_verified = effective_status == CertificateStatus::Issued;
+
+            VerifiedDocument {
+                name: d.name,
+                hash: d.hash,
+                timestamp: d.timestamp,
+                added_by: d.added_by,
+                verified_document: is_verified,
+                certificate_status: effective_status,
+                expiry: d.expiry,
+            }
         })
     }
 
@@ -435,7 +501,7 @@ mod tests {
 
     fn setup(env: &Env) -> (Address, Address) {
         let main_admin: Address = Address::generate(env);
-        let contract_addr: Address = env.register_contract(None, Contract);
+        let contract_addr: Address = env.register(Contract, ());
         let client = ContractClient::new(env, &contract_addr);
         client.init(&main_admin);
         env.ledger().with_mut(|li| {
@@ -492,13 +558,17 @@ mod tests {
         assert_eq!(stored.hash, hash);
         assert_eq!(stored.added_by, admin);
         assert!(stored.timestamp > 0);
+        assert_eq!(stored.status, CertificateStatus::Submitted);
+        assert_eq!(stored.expiry, 0u64);
 
         let verified = client.verify_document(&hash).expect("should verify");
         assert_eq!(verified.name, name);
         assert_eq!(verified.hash, hash);
         assert_eq!(verified.added_by, admin);
         assert!(verified.timestamp > 0);
-        assert!(verified.verified_document);
+        assert_eq!(verified.certificate_status, CertificateStatus::Submitted);
+        assert_eq!(verified.expiry, 0u64);
+        assert!(!verified.verified_document);
     }
 
     #[test]
@@ -555,7 +625,7 @@ mod tests {
     #[test]
     fn store_document_by_whitelisted_user() {
         let env = Env::default();
-        let (admin, contract_addr) = setup(&env);
+        let (_admin, contract_addr) = setup(&env);
         let client = ContractClient::new(&env, &contract_addr);
         env.mock_all_auths();
 
@@ -572,6 +642,8 @@ mod tests {
         assert_eq!(stored.hash, hash);
         assert_eq!(stored.added_by, user, "added_by must be the whitelisted caller");
         assert!(stored.timestamp > 0);
+        assert_eq!(stored.status, CertificateStatus::Submitted);
+        assert_eq!(stored.expiry, 0u64);
     }
 
     #[test]
@@ -624,7 +696,7 @@ mod tests {
     #[test]
     fn transfer_main_admin_with_auth() {
         let env = Env::default();
-        let (admin, contract_addr) = setup(&env);
+        let (_admin, contract_addr) = setup(&env);
         let client = ContractClient::new(&env, &contract_addr);
         env.mock_all_auths();
 
@@ -769,8 +841,9 @@ mod tests {
             .read_proposal(&proposal_id)
             .expect("proposal should still exist");
         assert!(executed_prop.executed);
-        // Document should be deleted
-        assert!(client.read_document(&doc_hash).is_none());
+        // Document should be marked Revoked (not deleted)
+        let revoked_doc = client.read_document(&doc_hash).expect("document should still exist");
+        assert_eq!(revoked_doc.status, CertificateStatus::Revoked);
     }
 
     #[test]
@@ -834,6 +907,193 @@ mod tests {
     }
 
     // =======================================================================
+    // Certificate lifecycle tests
+    // =======================================================================
+
+    #[test]
+    fn test_issue_certificate_success() {
+        let env = Env::default();
+        let (admin, contract_addr) = setup(&env);
+        let client = ContractClient::new(&env, &contract_addr);
+        env.mock_all_auths();
+
+        let name = String::from_str(&env, "Cert-Doc.pdf");
+        let hash = make_hash(&env, "certdoc");
+        client.store_document(&admin, &name, &hash);
+
+        // Issue certificate with expiry
+        let expiry = 2_000_000_000u64;
+        client.issue_certificate(&admin, &hash, &expiry);
+
+        let doc = client.read_document(&hash).expect("document should exist");
+        assert_eq!(doc.status, CertificateStatus::Issued);
+        assert_eq!(doc.expiry, expiry);
+
+        // Verify returns Issued + verified
+        let verified = client.verify_document(&hash).expect("should verify");
+        assert_eq!(verified.certificate_status, CertificateStatus::Issued);
+        assert!(verified.verified_document);
+        assert_eq!(verified.expiry, expiry);
+    }
+
+    #[test]
+    #[should_panic(expected = "only main admin can issue certificates")]
+    fn test_issue_certificate_not_authorized() {
+        let env = Env::default();
+        let (admin, contract_addr) = setup(&env);
+        let client = ContractClient::new(&env, &contract_addr);
+        env.mock_all_auths();
+
+        let name = String::from_str(&env, "Doc.pdf");
+        let hash = make_hash(&env, "doc");
+        client.store_document(&admin, &name, &hash);
+
+        // Non-admin tries to issue
+        let imposter = Address::generate(&env);
+        client.issue_certificate(&imposter, &hash, &1_000_000u64);
+    }
+
+    #[test]
+    #[should_panic(expected = "certificate can only be issued from Submitted status")]
+    fn test_issue_certificate_already_issued() {
+        let env = Env::default();
+        let (admin, contract_addr) = setup(&env);
+        let client = ContractClient::new(&env, &contract_addr);
+        env.mock_all_auths();
+
+        let name = String::from_str(&env, "Doc.pdf");
+        let hash = make_hash(&env, "doc");
+        client.store_document(&admin, &name, &hash);
+
+        client.issue_certificate(&admin, &hash, &2_000_000_000u64);
+        // Second issue should panic
+        client.issue_certificate(&admin, &hash, &3_000_000_000u64);
+    }
+
+    #[test]
+    fn test_verify_submitted_certificate() {
+        let env = Env::default();
+        let (admin, contract_addr) = setup(&env);
+        let client = ContractClient::new(&env, &contract_addr);
+        env.mock_all_auths();
+
+        let name = String::from_str(&env, "Doc.pdf");
+        let hash = make_hash(&env, "doc");
+        client.store_document(&admin, &name, &hash);
+
+        // Before issuing, verify should return Submitted + not verified
+        let verified = client.verify_document(&hash).expect("should verify");
+        assert_eq!(verified.certificate_status, CertificateStatus::Submitted);
+        assert!(!verified.verified_document);
+        assert_eq!(verified.expiry, 0u64);
+    }
+
+    #[test]
+    fn test_verify_expired_certificate() {
+        let env = Env::default();
+        let (admin, contract_addr) = setup(&env);
+        let client = ContractClient::new(&env, &contract_addr);
+        env.mock_all_auths();
+
+        // Set ledger to a known timestamp
+        let current_time = 1_800_000_000u64;
+        env.ledger().with_mut(|li| {
+            li.timestamp = current_time;
+        });
+
+        let name = String::from_str(&env, "Doc.pdf");
+        let hash = make_hash(&env, "doc");
+        client.store_document(&admin, &name, &hash);
+
+        // Issue with expiry that's already passed
+        let past_expiry = current_time - 100;
+        client.issue_certificate(&admin, &hash, &past_expiry);
+
+        // Verify returns Expired + not verified
+        let verified = client.verify_document(&hash).expect("should verify");
+        assert_eq!(verified.certificate_status, CertificateStatus::Expired);
+        assert!(!verified.verified_document);
+        assert_eq!(verified.expiry, past_expiry);
+    }
+
+    #[test]
+    fn test_verify_revoked_certificate() {
+        let env = Env::default();
+        let (admin, contract_addr) = setup(&env);
+        let client = ContractClient::new(&env, &contract_addr);
+        env.mock_all_auths();
+
+        // Set threshold to 1 so a single sub-admin can execute
+        client.set_threshold(&admin, &1u32);
+
+        let sub = Address::generate(&env);
+        client.add_sub_admin(&admin, &sub);
+
+        let name = String::from_str(&env, "Doc.pdf");
+        let hash = make_hash(&env, "doc");
+        client.store_document(&admin, &name, &hash);
+
+        // Issue certificate
+        let expiry = 2_000_000_000u64;
+        client.issue_certificate(&admin, &hash, &expiry);
+
+        // Confirm Issued
+        assert_eq!(
+            client.read_document(&hash).unwrap().status,
+            CertificateStatus::Issued
+        );
+
+        // Revoke via governance proposal
+        let action = ProposalAction::RevokeCertificate(hash.clone());
+        let pid = client.create_proposal(&sub, &action);
+        client.approve_proposal(&sub, &pid);
+
+        // Document should be Revoked
+        let doc = client.read_document(&hash).unwrap();
+        assert_eq!(doc.status, CertificateStatus::Revoked);
+
+        // Verify returns Revoked + not verified
+        let verified = client.verify_document(&hash).expect("should verify");
+        assert_eq!(verified.certificate_status, CertificateStatus::Revoked);
+        assert!(!verified.verified_document);
+    }
+
+    #[test]
+    fn test_contract_upgrade() {
+        let env = Env::default();
+        let (admin, contract_addr) = setup(&env);
+        let client = ContractClient::new(&env, &contract_addr);
+        env.mock_all_auths();
+
+        // Set threshold to 2 so 1 approval doesn't auto-execute
+        client.set_threshold(&admin, &2u32);
+
+        let sub = Address::generate(&env);
+        client.add_sub_admin(&admin, &sub);
+
+        let wasm_hash = BytesN::from_array(&env, &[0u8; 32]);
+        let action = ProposalAction::ContractUpgrade(wasm_hash.clone());
+        let pid = client.create_proposal(&admin, &action);
+        assert_eq!(pid, 1);
+
+        // Verify proposal was created with correct action
+        let prop = client.read_proposal(&pid).expect("proposal should exist");
+        assert!(!prop.executed);
+        match &prop.action {
+            ProposalAction::ContractUpgrade(h) => {
+                assert_eq!(h, &wasm_hash);
+            }
+            _ => panic!("expected ContractUpgrade action"),
+        }
+
+        // Approve once — threshold is 2, so not executed yet
+        client.approve_proposal(&sub, &pid);
+        let after_one = client.read_proposal(&pid).unwrap();
+        assert_eq!(after_one.approvals.len(), 1);
+        assert!(!after_one.executed);
+    }
+
+    // =======================================================================
     // End-to-end integration test — full flow
     // =======================================================================
 
@@ -882,6 +1142,13 @@ mod tests {
         assert_eq!(stored.name, doc_name);
         assert_eq!(stored.hash, doc_hash_val);
         assert_eq!(stored.added_by, company_user_1);
+        assert_eq!(stored.status, CertificateStatus::Submitted);
+        assert_eq!(stored.expiry, 0u64);
+
+        // Verify document before issuing — should be Submitted and not verified
+        let pre_issue = client.verify_document(&doc_hash_val).expect("should verify");
+        assert_eq!(pre_issue.certificate_status, CertificateStatus::Submitted);
+        assert!(!pre_issue.verified_document);
 
         // Reviews
         client.submit_review(
@@ -903,6 +1170,19 @@ mod tests {
         assert_eq!(review_b.status, DocumentStatus::Approved);
         assert_eq!(review_b.score, 92);
 
+        // Issue certificate (admin only) with expiry far in the future
+        let expiry = 1_900_000_000u64;
+        client.issue_certificate(&admin, &doc_hash_val, &expiry);
+        let issued_doc = client.read_document(&doc_hash_val).expect("document should exist");
+        assert_eq!(issued_doc.status, CertificateStatus::Issued);
+        assert_eq!(issued_doc.expiry, expiry);
+
+        // Verify document after issuing — should be Issued and verified
+        let verified = client.verify_document(&doc_hash_val).expect("should verify");
+        assert_eq!(verified.certificate_status, CertificateStatus::Issued);
+        assert!(verified.verified_document);
+        assert_eq!(verified.expiry, expiry);
+
         // Scenario A — RevokeCertificate via multi-sig DAO
         let revoke_action = ProposalAction::RevokeCertificate(doc_hash_val.clone());
         let prop_id_1 = client.create_proposal(&sub_a, &revoke_action);
@@ -913,13 +1193,21 @@ mod tests {
         let p1_before = client.read_proposal(&prop_id_1).unwrap();
         assert_eq!(p1_before.approvals.len(), 1);
         assert!(!p1_before.executed);
-        assert!(client.read_document(&doc_hash_val).is_some());
+        // Doc still Issued (proposal not executed yet)
+        let still_issued = client.read_document(&doc_hash_val).unwrap();
+        assert_eq!(still_issued.status, CertificateStatus::Issued);
 
-        // sub_b approves — 2/2 => auto-executes
+        // sub_b approves — 2/2 => auto-executes, doc marked Revoked
         client.approve_proposal(&sub_b, &prop_id_1);
         let p1_done = client.read_proposal(&prop_id_1).unwrap();
         assert!(p1_done.executed);
-        assert!(client.read_document(&doc_hash_val).is_none());
+        // Document still exists but is Revoked
+        let revoked_doc = client.read_document(&doc_hash_val).expect("doc should still exist");
+        assert_eq!(revoked_doc.status, CertificateStatus::Revoked);
+        // Verify returns Revoked, not verified
+        let revoked_verify = client.verify_document(&doc_hash_val).expect("should verify");
+        assert_eq!(revoked_verify.certificate_status, CertificateStatus::Revoked);
+        assert!(!revoked_verify.verified_document);
 
         // Scenario B — UpdateThreshold via multi-sig DAO
         let update_action = ProposalAction::UpdateThreshold(5u32);
